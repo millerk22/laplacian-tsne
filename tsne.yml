@@ -1,0 +1,15 @@
+name: tsne 
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy
+  - scipy
+  - matplotlib
+  - jupyter
+  - pip
+  - pip:
+    - tqdm
+    - annoy
+    - torch
+    - graphlearning
