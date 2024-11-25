@@ -10,9 +10,11 @@ from time import time
 
 import numpy as np
 from scipy import linalg
-from scipy.sparse import csr_matrix, issparse
+from scipy.sparse import csr_matrix, issparse, coo_matrix
 from scipy.spatial.distance import pdist, squareform
 import graphlearning as gl
+from joblib import Parallel, delayed
+from functools import partial
 
 from sklearn.base import (
     BaseEstimator,
@@ -28,12 +30,55 @@ from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
 from sklearn.utils._param_validation import Hidden, Interval, StrOptions, validate_params
 from sklearn.utils.validation import _num_samples, check_non_negative
 
+import matplotlib.pyplot as plt
+
 # mypy error: Module 'sklearn.manifold' has no attribute '_utils'
 # mypy error: Module 'sklearn.manifold' has no attribute '_barnes_hut_tsne'
 from sklearn.manifold import _barnes_hut_tsne, _utils  # type: ignore
 
 MACHINE_EPSILON = np.finfo(np.double).eps
 
+
+def opt_bisection(f, xmin=0.0, xmax=10.0, tol=1e-4, itermax=1000, debug=False):
+    r"""
+    Function to find root of $f(x)$ via bisection method. Default settings of left and right endpoints
+    are with the entropy-perplexity smoothing in mind.
+    """
+
+    other_iters = 0
+    assert f(xmin) > 0.0
+    while f(xmax) > 0.0:
+        if f(xmin)*f(xmax) < 0:
+            raise ValueError(f"f(xmin) = {f(xmin)} (should be > 0) and f(xmax) ={f(xmax)} (want to be < 0)")
+        xmax *= 10
+        other_iters += 1
+        if other_iters > 10:
+            break
+    
+    if other_iters != 0 and debug:
+        print(other_iters)
+        
+    it = 0
+    if abs(f(xmin)) <= tol:
+        if debug: print(it)
+        return xmin 
+    if abs(f(xmax)) <= tol:
+        if debug: print(it)
+        return xmax
+    
+    
+    while it <= itermax:
+        c = 0.5*(xmin + xmax)
+        if abs(f(c)) <= tol:
+            if debug: print(it)
+            return c 
+        if f(xmin)*f(c) > 0.0:
+            xmin = c 
+        else:
+            xmax = c 
+        it += 1
+    print(f"------- WARNING: Bisection did not converge in {itermax} iterations to tol = {tol}, current err = {abs(f(c))} -------")
+    return None
 
 
 def _laplacian_kl_divergence(
@@ -744,7 +789,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             Hidden(StrOptions({"deprecated"})),
         ],
         "knn_graph": [Interval(Integral, 2, None, closed="left")],
-        "gl_kernel": [StrOptions({"gaussian", "uniform"})],
+        "gl_kernel": [StrOptions({"gaussian", "uniform", "qij", "entropyperp"})],
         "gl_normalization": [StrOptions({"combinatorial", "normalized"})],
         "rpchol_k" : [None, Integral],
         "rpchol_iter":[None, Integral]
@@ -842,14 +887,57 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         if self.verbose:
             print("[t-SNE] Computing the graph Laplacian via GraphLearning package...")
         
-        W = gl.weightmatrix.knn(X, self.knn_graph, kernel=self.gl_kernel)
+
+        if self.gl_kernel in ["uniform", "gaussian"]:
+            W = gl.weightmatrix.knn(X, self.knn_graph, kernel=self.gl_kernel)
+        elif self.gl_kernel == "qij":
+            W = gl.weightmatrix.knn(X, self.knn_graph, kernel="gaussian")
+        elif self.gl_kernel == "entropyperp":
+            # compute k-nearest neighbors data
+            knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
+            D = knn_dist * knn_dist  # squared distances
+            n = X.shape[0]
+
+            if self.perplexity > self.knn_graph:
+                print(f"perplexity {self.perplexity} is too large... setting to half of knn = {self.knn_graph}")
+                self.perplexity = 0.5*self.knn_graph
+
+            # prep for find entropy-perplexity smoothing of nearest neighbors  
+            OFS = np.log(self.perplexity)
+            similarity = lambda v, x: np.exp(-x*v)
+            def entropy_obj(x, vals):
+                # vals = vals/vals.max()
+                probs = similarity(vals,x)
+                probs /= probs.sum()
+                mask = probs >= 1e-50
+                # print(probs.min(), probs.max())
+                return -1.0*(probs[mask]*np.log(probs[mask])).sum() - OFS
+
+            # parallelize finding each of the bandwidths
+            D /= D.max(axis=1).reshape(-1,1)
+            D = D * D
+            gammas2 = Parallel(n_jobs=self.n_jobs)(delayed(opt_bisection)(partial(entropy_obj, vals=D[i, 1:])) for i in range(knn_dist.shape[0]))
+            weights = D * np.array(gammas2).reshape(-1,1)   # apply the entropy-scaled bandwidths
+
+            ##### Finish construction of weightmatrix (copy-pasted from graphlearning.weightmatrix.knn)
+            #Flatten knn data and weights
+            knn_ind = knn_ind.flatten()
+            weights = weights.flatten()
+
+            #Self indices
+            self_ind = np.ones((n,self.knn_graph))*np.arange(n)[:,None]
+            self_ind = self_ind.flatten()
+
+            #Construct sparse matrix and convert to Compressed Sparse Row (CSR) format
+            W = coo_matrix((weights, (self_ind, knn_ind)),shape=(n,n)).tocsr()
+            W = (W + W.transpose()) / 2.0
+            W.setdiag(0)
+
         self.Graph = gl.graph(W)
         L = self.Graph.laplacian(normalization=self.gl_normalization)
         if self.verbose >= 2:
             print(f"Graph is connected = {self.Graph.isconnected()}")
-        del W # don't need this stored anymore
         
-
         if isinstance(self.init, np.ndarray):
             X_embedded = self.init
         elif self.init == "pca":
@@ -874,6 +962,16 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             _, X_embedded = self.Graph.eigen_decomp(k=self.n_components+1) 
             X_embedded = X_embedded[:,1:].astype(np.float32)
 
+        if self.gl_kernel == "qij":
+            knn_inds = W.nonzero()
+            qdata = 1./ (1. + np.linalg.norm(X_embedded[knn_inds[0]] - X_embedded[knn_inds[1]], axis=1)**2.)
+            W[knn_inds] = qdata / qdata.sum()
+            self.Graph = gl.graph(W)
+            L = self.Graph.laplacian(normalization=self.gl_normalization)
+            if self.verbose >= 2:
+                print(f"Graph (with Q_ij) is connected = {self.Graph.isconnected()}")
+
+        del W # don't need this stored anymore
 
         return self._lap_tsne(
             L,
