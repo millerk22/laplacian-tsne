@@ -316,15 +316,10 @@ def _laplacian_kl_divergence_eigen(
     G = 1./ (1. + pairwise_distances(X_embedded_lm, X_embedded_lm, metric="euclidean", squared=True)) 
     repulsive_sum = G.sum()
     cost += np.log(repulsive_sum / (n_samples**2.0))
-
-    
-    # compute the gradient and add to the cost for the laplacian part 
-    grad =  L @ A_embedded / n_samples  # the graph Laplacian part of the gradient
-    cost_lap = np.dot(grad.ravel(), X_embedded.ravel())
-    cost +=  cost_lap
     
     # compute the repulsive terms for the gradient 
-    H = G**2. 
+    H = G**2.
+    grad += (4.0/repulsive_sum) * (S2 @ X_embedded - S2.sum(axis=1).reshape(-1,1) * X_embedded) 
     Hll_inv = np.linalg.inv(H[landmarks,:])
     H_ = H @ Hll_inv    # repulsive terms squared is H_ @ H.T
     grad += (4.0/repulsive_sum) * (H_ @ (H.T @ X_embedded) - (H_ @ (H.sum(axis=0))).reshape(-1, 1) * X_embedded)
