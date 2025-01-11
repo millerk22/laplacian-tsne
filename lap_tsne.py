@@ -81,142 +81,6 @@ def opt_bisection(f, xmin=0.0, xmax=10.0, tol=1e-4, itermax=1000, debug=False):
     return None
 
 
-def _laplacian_kl_divergence(
-    params,
-    L,
-    n_samples,
-    n_components,
-    skip_num_points=0,
-    compute_error=True,
-):
-    r"""t-SNE objective function: gradient of the KL divergence
-    of p_ijs and q_ijs and the absolute error.
-
-    Parameters
-    ----------
-    params : ndarray of shape (n_params,)
-        Unraveled embedding.
-
-    L : csr matrix of shape (n_samples x n_samples)
-        Sparse graph Laplacian matrix.
-        # early exaggeration can be multiplied in this matrix, much like the sklearn implementation works on P \mapsto \alpha P
-
-    n_samples : int
-        Number of samples.
-
-    n_components : int
-        Dimension of the embedded space.
-
-    skip_num_points : int, default=0
-        This does not compute the gradient for points with indices below
-        `skip_num_points`. This is useful when computing transforms of new
-        data where you'd like to keep the old data fixed.
-
-    compute_error: bool, default=True
-        If False, the kl_divergence is not computed and returns NaN.
-
-    Returns
-    -------
-    lap_kl_divergence : float
-        Laplacian approximation of the Kullback-Leibler divergence of p_ij and q_ij.
-
-    grad : ndarray of shape (n_params,)
-        Unraveled gradient of the this Laplacian approximation of Kullback-Leibler divergence 
-        with respect to the embedding.
-    """
-    X_embedded = params.reshape(n_samples, n_components)  # this is the what is denoted as the mapping T: R^d \rightarrow R^m
-    squared_distances = pairwise_distances(X_embedded, metric="euclidean", squared=True)
-    repulsive_term = 1./(1. + squared_distances)
-    repulsive_sum = repulsive_term.sum()
-    cost = np.log(repulsive_sum/ (n_samples**2.0))
-
-    # compute the gradient
-    grad =  L @ X_embedded / n_samples  # the graph Laplacian part of the gradient
-    cost_lap = np.dot(grad.ravel(), X_embedded.ravel())
-    cost +=  cost_lap
-    S2 = repulsive_term**(2.0)
-    grad += (4.0/repulsive_sum) * (S2 @ X_embedded - S2.sum(axis=1).reshape(-1,1) * X_embedded)
-    grad = grad.ravel()
-    
-    return cost, grad
-
-
-
-def _laplacian_kl_divergence_lowrank(
-    params,
-    L,
-    n_samples,
-    n_components,
-    landmarks,
-    skip_num_points=0,
-    compute_error=True
-):
-    r"""t-SNE objective function: gradient of the Laplacian term + a low-rank approximation of the repulsion term
-
-    Parameters
-    ----------
-    params : ndarray of shape (n_params,)
-        Unraveled embedding.
-
-    L : csr matrix of shape (n_samples x n_samples)
-        Sparse graph Laplacian matrix.
-        # early exaggeration can be multiplied in this matrix, much like the sklearn implementation works on P \mapsto \alpha P
-
-    n_samples : int
-        Number of samples.
-
-    n_components : int
-        Dimension of the embedded space.
-
-    landmarks : list of ints
-        Set of indices corresponding to the landmark points to be used for the low-rank approximation of 
-        K and K2
-
-    skip_num_points : int, default=0
-        This does not compute the gradient for points with indices below
-        `skip_num_points`. This is useful when computing transforms of new
-        data where you'd like to keep the old data fixed.
-
-    compute_error: bool, default=True
-        If False, the kl_divergence is not computed and returns NaN.
-
-    Returns
-    -------
-    lap_kl_divergence : float
-        Laplacian approximation of the Kullback-Leibler divergence of p_ij and q_ij.
-
-    grad : ndarray of shape (n_params,)
-        Unraveled gradient of the this Laplacian approximation of Kullback-Leibler divergence 
-        with respect to the embedding.
-    """
-    if landmarks is None:
-        raise ValueError(f"landmarks variable cannot be None....")
-
-    X_embedded = params.reshape(n_samples, n_components)  # this is the what is denoted as the mapping T: R^d \rightarrow R^m
-    
-    # compute the repulsive part of the cost function
-    G = 1./ (1. + pairwise_distances(X_embedded, X_embedded[landmarks, :], metric="euclidean", squared=True))
-    Gll_inv = np.linalg.inv(G[landmarks,:])
-    G_ =  G @ Gll_inv 
-    repulsive_sum = np.inner(G.sum(axis=0), G_.sum(axis=0))
-    cost = np.log(repulsive_sum / (n_samples**2.0))
-
-    
-    # compute the gradient and add to the cost for the laplacian part 
-    grad =  L @ X_embedded / n_samples  # the graph Laplacian part of the gradient
-    cost_lap = np.dot(grad.ravel(), X_embedded.ravel())
-    cost +=  cost_lap
-    
-    # compute the repulsive terms for the gradient 
-    H = G**2. 
-    Hll_inv = np.linalg.inv(H[landmarks,:])
-    H_ = H @ Hll_inv    # repulsive terms squared is H_ @ H.T
-    grad += (4.0/repulsive_sum) * (H_ @ (H.T @ X_embedded) - (H_ @ (H.sum(axis=0))).reshape(-1, 1) * X_embedded)
-    grad = grad.ravel()
-    
-    return cost, grad
-
-
 def _rpcholesky(X_, k, tol=1e-5, returnG=False):
     n = X_.shape[0]
     rng = np.random.default_rng()
@@ -328,6 +192,13 @@ def _laplacian_kl_divergence_eigen(
     return cost, grad
 
 
+
+################################################
+################################################
+#### CHANGE TO DO ONLY "full" or "landmarks" sampling.
+#### SEE WHAT CAN USE FROM Adam's code
+#############################################
+###########################################
 
 def _gradient_descent(
     objective,
@@ -646,15 +517,6 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         different results. The perplexity must be less than the number
         of samples.
 
-    early_exaggeration : float, default=12.0
-        Controls how tight natural clusters in the original space are in
-        the embedded space and how much space will be between them. For
-        larger values, the space between natural clusters will be larger
-        in the embedded space. Again, the choice of this parameter is not
-        very critical. If the cost function increases during initial
-        optimization, the early exaggeration factor or the learning rate
-        might be too high.
-
     learning_rate : float or "auto", default="auto"
         The learning rate for t-SNE is usually in the range [10.0, 1000.0]. If
         the learning rate is too high, the data may look like a 'ball' with any
@@ -666,7 +528,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         etc.) use a definition of learning_rate that is 4 times smaller than
         ours. So our learning_rate=200 corresponds to learning_rate=800 in
         those other implementations. The 'auto' option sets the learning_rate
-        to `max(N / early_exaggeration / 4, 50)` where N is the sample size,
+        to `max(N / 4, 50)` where N is the sample size,
         following [4] and [5].
 
         .. versionchanged:: 1.2
@@ -845,7 +707,6 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
     _parameter_constraints: dict = {
         "n_components": [Interval(Integral, 1, None, closed="left")],
         "perplexity": [Interval(Real, 0, None, closed="neither")],
-        "early_exaggeration": [Interval(Real, 1, None, closed="left")],
         "learning_rate": [
             StrOptions({"auto"}),
             Interval(Real, 0, None, closed="neither"),
@@ -861,7 +722,6 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         ],
         "verbose": ["verbose"],
         "random_state": ["random_state"],
-        "method": [StrOptions({"full", "lowrank", "eigen"})],
         "angle": [Interval(Real, 0, 1, closed="both")],
         "n_jobs": [None, Integral],
         "n_iter": [
@@ -869,15 +729,16 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             Hidden(StrOptions({"deprecated"})),
         ],
         "knn_graph": [Interval(Integral, 2, None, closed="left")],
-        "gl_kernel": [StrOptions({"gaussian", "uniform", "qij", "entropyperp"})],
+        "gl_kernel": [StrOptions({"entropyperp", "gaussian", "uniform"})],
         "gl_normalization": [StrOptions({"combinatorial", "normalized"})],
+        ##### PUT graph construction parameter option here
         "num_landmarks" : [None, Integral],
         "rpchol_iter":[None, Integral],
         "k_eigen":[None, Integral]
     }
 
-    # Control the number of exploration iterations with early_exaggeration on
-    _EXPLORATION_MAX_ITER = 250
+    # Control the number of iterations (TO BE CHANGED POSSIBLY)
+    _MAX_ITER = 250
 
     # Control the number of iterations between progress checks
     _N_ITER_CHECK = 50
@@ -887,7 +748,6 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         n_components=2,
         *,
         perplexity=30.0,
-        early_exaggeration=1.0, # previously was 12.0
         learning_rate="auto",
         max_iter=None,  # TODO(1.7): set to 1000
         n_iter_without_progress=300,
@@ -897,12 +757,11 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         init="sc",
         verbose=0,
         random_state=None,
-        method="full",
         angle=0.5,
         n_jobs=None,
         n_iter="deprecated",
         knn_graph=20,
-        gl_kernel="gaussian",
+        gl_kernel="entropyperp",
         gl_normalization="combinatorial",
         rpchol_iter=50, 
         num_landmarks = 50,
@@ -910,7 +769,6 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
     ):
         self.n_components = n_components
         self.perplexity = perplexity
-        self.early_exaggeration = early_exaggeration
         self.learning_rate = learning_rate
         self.max_iter = max_iter
         self.n_iter_without_progress = n_iter_without_progress
@@ -920,24 +778,14 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.init = init
         self.verbose = verbose
         self.random_state = random_state
-        self.method = method
         self.angle = angle
         self.n_jobs = n_jobs
         self.n_iter = n_iter
         self.knn_graph = knn_graph
         self.gl_kernel = gl_kernel
         self.gl_normalization = gl_normalization
-        if self.method == "lowrank":
-            self.rpchol_iter = rpchol_iter 
-            self.num_landmarks = num_landmarks
-            self.k_eigen = None
-        elif self.method == "eigen":
-            self.num_landmarks = num_landmarks
-            self.k_eigen = k_eigen
-        else:
-            self.rpchol_iter = None
-            self.num_landmarks = None 
-            self.k_eigen = None
+        self.num_landmarks = num_landmarks
+        self.k_eigen = k_eigen
 
 
     def _check_params_vs_input(self, X):
@@ -956,7 +804,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
 
         if self.learning_rate == "auto":
             # See issue #18018
-            self.learning_rate_ = X.shape[0] / self.early_exaggeration / 4
+            self.learning_rate_ = X.shape[0] / 4   # assuming early exaggeration = 1.0
             self.learning_rate_ = np.maximum(self.learning_rate_, 50)
         else:
             self.learning_rate_ = self.learning_rate
@@ -976,9 +824,13 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
 
         if self.gl_kernel in ["uniform", "gaussian"]:
             W = gl.weightmatrix.knn(X, self.knn_graph, kernel=self.gl_kernel)
-        elif self.gl_kernel == "qij":
-            W = gl.weightmatrix.knn(X, self.knn_graph, kernel="gaussian")
         elif self.gl_kernel == "entropyperp":
+            #############################################################
+            #############################################################
+            ########### ADD FASTER METHODS, leveraging Adam's Code #####
+            ###########################################################
+            ############################################################
+
             # compute k-nearest neighbors data
             knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
             D = knn_dist * knn_dist  # squared distances
@@ -1024,6 +876,12 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         if self.verbose >= 2:
             print(f"Graph is connected = {self.Graph.isconnected()}")
         
+
+        #######################################################
+        #####################################################
+        ######### CHANGE INITIALIZATION METHODS HERE #########
+        ####### rename sc, use similar to Adam's code?
+        ###############################################
         if isinstance(self.init, np.ndarray):
             X_embedded = self.init
         elif self.init == "pca":
@@ -1059,37 +917,28 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
 
         del W # don't need this stored anymore
 
-        if self.method == "eigen":
-            self.V, evals = self.Graph.eigen_decomp(k=self.k_eigen+1)
-            self.V, evals = self.V[:,1:], evals[1:]
-            A_embedded = self.V.T @ X_embedded    # project onto eigenfunctions
+        self.V, evals = self.Graph.eigen_decomp(k=self.k_eigen+1)
+        self.V, evals = self.V[:,1:], evals[1:]
+        A_embedded = self.V.T @ X_embedded    # project onto eigenfunctions
 
-            return self._lap_tsne(
-                evals,
-                self.k_eigen,
-                X_embedded=A_embedded,
-                skip_num_points=skip_num_points,
-            )
-
-
-        return self._lap_tsne(
-            L,
-            n_samples,
-            X_embedded=X_embedded,
+        return self._lap_tsne_eig(
+            evals,
+            self.k_eigen,
+            A_embedded=A_embedded,
             skip_num_points=skip_num_points,
         )
 
-    def _lap_tsne(
+    def _lap_tsne_eig(
         self,
-        L,
+        evals,
         n_samples,
-        X_embedded,
+        A_embedded,
         neighbors=None,
         skip_num_points=0,
     ):
         """Runs Laplacian approximation of t-SNE."""
 
-        params = X_embedded.ravel()
+        params = A_embedded.ravel()
         
         opt_args = {
             "it": 0,
@@ -1098,90 +947,42 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             "learning_rate": self.learning_rate_,
             "verbose": self.verbose,
             "kwargs": dict(skip_num_points=skip_num_points),
-            #"args": [L, degrees_of_freedom, n_samples, self.n_components],
-            "args": [L, n_samples, self.n_components],
-            "n_iter_without_progress": self._EXPLORATION_MAX_ITER,
-            "max_iter": self._EXPLORATION_MAX_ITER,
+            "args": [evals, n_samples, self.n_components],
+            "n_iter_without_progress": self._MAX_ITER,
+            "max_iter": self._MAX_ITER,
             "momentum": 0.5,
         }
 
-        if self.method == "lowrank":
-            opt_args["num_landmarks"] = self.num_landmarks 
-            opt_args["rpchol_iter"] = self.rpchol_iter
-        if self.method == "eigen":
-            opt_args["num_landmarks"] = self.num_landmarks
-        
-        if self.method == "full":
-            obj_func = _laplacian_kl_divergence
-        elif self.method == "lowrank":
-            obj_func = _laplacian_kl_divergence_lowrank
-        elif self.method == "eigen":
-            obj_func = _laplacian_kl_divergence_eigen
-        else:
-            raise ValueError(f"method = {self.method} not valid")
-            
-        # Learning schedule (part 1): do 250 iteration with lower momentum but
-        # higher learning rate controlled via the early exaggeration parameter
-        if self.early_exaggeration != 1.0:
-            L *= self.early_exaggeration
-            if self.verbose >= 2:
-                params, kl_divergence, it, iterates = _gradient_descent(obj_func, params, **opt_args)
-                self.iterates = [x.reshape(n_samples, self.n_components) for x in iterates]
-            else:
-                params, kl_divergence, it = _gradient_descent(obj_func, params, **opt_args)
+        opt_args["num_landmarks"] = self.num_landmarks
+        obj_func = _laplacian_kl_divergence_eigen
 
-            if self.verbose:
-                extra_str = f"(Laplacian-based approx, method = {self.method})"
-                print(
-                    "[t-SNE] KL divergence %s after %d iterations with early exaggeration: %f"
-                    % (extra_str, it + 1, kl_divergence)
-                )
-            
-            
-            # Learning schedule (part 2): disable early exaggeration and finish
-            # optimization with a higher momentum at 0.8
-            L /= self.early_exaggeration
-            remaining = self._max_iter - self._EXPLORATION_MAX_ITER
-            if it < self._EXPLORATION_MAX_ITER or remaining > 0:
-                opt_args["max_iter"] = self._max_iter
-                opt_args["it"] = it + 1
-                opt_args["momentum"] = 0.8
-                opt_args["n_iter_without_progress"] = self.n_iter_without_progress
-                
-                if self.verbose >= 2:
-                    params, kl_divergence, it, iterates = _gradient_descent(obj_func, params, **opt_args)
-                    self.iterates.extend([x.reshape(n_samples, self.n_components) for x in iterates])
-                else:
-                    params, kl_divergence, it = _gradient_descent(obj_func, params, **opt_args)
-        else:
-            # no early exaggeration, and so we start optimization process with the higher momentum at 0.8
-            remaining = self._max_iter
-            opt_args["max_iter"] = self._max_iter
-            opt_args["it"] = 0
-            opt_args["momentum"] = 0.8
-            opt_args["n_iter_without_progress"] = self.n_iter_without_progress
+        # no early exaggeration, and so we start optimization process with the higher momentum at 0.8
+        remaining = self._max_iter
+        opt_args["max_iter"] = self._max_iter
+        opt_args["it"] = 0
+        opt_args["momentum"] = 0.8
+        opt_args["n_iter_without_progress"] = self.n_iter_without_progress
 
-            if self.verbose >= 2:
-                params, kl_divergence, it, iterates = _gradient_descent(obj_func, params, **opt_args)
-                self.iterates = [x.reshape(n_samples, self.n_components) for x in iterates]
-            else:
-                params, kl_divergence, it = _gradient_descent(obj_func, params, **opt_args)
+        if self.verbose >= 2:
+            params, kl_divergence, it, iterates = _gradient_descent(obj_func, params, **opt_args)
+            self.iterates = [x.reshape(n_samples, self.n_components) for x in iterates]
+        else:
+            params, kl_divergence, it = _gradient_descent(obj_func, params, **opt_args)
 
         # Save the final number of iterations
         self.n_iter_ = it
 
         if self.verbose:
-            extra_str = f"(Laplacian-based approx, method = {self.method})"
+            extra_str = f"(Laplacian-based approx)"
             print(
                 "[t-SNE] KL divergence %s after %d iterations: %f"
                 % (extra_str, it + 1, kl_divergence)
             )
 
 
-        if self.method == "eigen":
-            X_embedded = self.V @ params.reshape(self.k_eigen, self.n_components) # return the full embedding from the eigenfunction coeffs (params = A_embedded)
-        else:
-            X_embedded = params.reshape(n_samples, self.n_components)
+        
+        self.A = params.reshape(self.k_eigen, self.n_components) # save the learned eigenfunction coeffs as member property
+        X_embedded = self.V @ self.A # return the full embedding from the eigenfunction coeffs 
         self.kl_divergence_ = kl_divergence
 
         return X_embedded
