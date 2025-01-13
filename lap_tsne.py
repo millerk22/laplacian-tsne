@@ -120,7 +120,8 @@ def _laplacian_kl_divergence_eigen(
     skip_num_points=0,
     compute_error=True,
     V = None,
-    kernel="standard"
+    kernel="standard",
+    hat_bandwidth = 0.015
 ):
     r"""t-SNE objective function: gradient of the Laplacian term + a low-rank approximation of the repulsion term
 
@@ -162,8 +163,6 @@ def _laplacian_kl_divergence_eigen(
         Unraveled gradient of the this Laplacian approximation of Kullback-Leibler divergence 
         with respect to the embedding.
     """
-    if landmarks is None:
-        raise ValueError(f"landmarks variable cannot be None....")
     
     if V is None:
         raise ValueError("Eigenvector matrix ``V`` cannot be None...")
@@ -171,22 +170,43 @@ def _laplacian_kl_divergence_eigen(
     k_eigen = len(evals)
     A_embedded = params.reshape(k_eigen, n_components)  # these are the eigenfunction coefficients, our optimization variables.
     grad = evals.reshape(1,-1) @ A_embedded / n_samples   # attraction term gradient  
-    cost = (A_embedded.T @ grad).sum()        # attraction term cost 
-        
-    X_embedded_lm = V[landmarks,:] @ A_embedded  # this is the subset of rows of the "full embedding" corresponding to the current 
-                                            # eigenfunction coeffs and the landmark points
+    cost = (A_embedded * grad).sum()        # attraction term cost 
+    
+    if landmarks is None:
+        # "full" repulsion computation
+        X_embedded = V @ A_embedded 
+    else:
+        # subsampled repulsion computation
+        X_embedded = V[landmarks,:] @ A_embedded 
+
 
     # compute the repulsive part of the cost function
-    G = 1./ (1. + pairwise_distances(X_embedded_lm, X_embedded_lm, metric="euclidean", squared=True)) 
-    repulsive_sum = G.sum()
+    if kernel == "standard":
+        G = 1./ (1. + pairwise_distances(X_embedded, X_embedded, metric="euclidean", squared=True)) 
+        repulsive_sum = G.sum()
+        H = G**2.
+        
+    elif kernel == "hat":
+        distances = pairwise_distances(X_embedded, metric="euclidean", squared=False)
+        G = np.clip(1.0-hat_bandwidth*distances,0,None)
+        np.fill_diagonal(G, 0)
+        repulsive_sum = G.sum()
+
+        # change this (make more efficient)
+        H = np.zeros_like(distances)
+        nonzero_mask = distances > 0.0
+        valid_mask = nonzero_mask & (distances < (.1 / hat_bandwidth))
+        H[valid_mask] = hat_bandwidth / distances[valid_mask] 
+    else:
+        raise ValueError(f"kernel = {kernel} not recognized...")
+        
     cost += np.log(repulsive_sum / (n_samples**2.0))
+    grad += (2.0/repulsive_sum) * (H @ X_embedded - H.sum(axis=1).reshape(-1,1) * X_embedded) 
     
-    # compute the repulsive terms for the gradient 
-    H = G**2.
-    grad += (4.0/repulsive_sum) * (S2 @ X_embedded - S2.sum(axis=1).reshape(-1,1) * X_embedded) 
-    Hll_inv = np.linalg.inv(H[landmarks,:])
-    H_ = H @ Hll_inv    # repulsive terms squared is H_ @ H.T
-    grad += (4.0/repulsive_sum) * (H_ @ (H.T @ X_embedded) - (H_ @ (H.sum(axis=0))).reshape(-1, 1) * X_embedded)
+    if landmarks is None:
+        grad = V.T @ grad
+    else:
+        grad = V[landmarks,:].T @ grad
     grad = grad.ravel()
     
     return cost, grad
@@ -212,8 +232,7 @@ def _gradient_descent(
     min_gain=0.01,
     min_grad_norm=1e-7,
     verbose=0,
-    num_landmarks=None, 
-    rpchol_iter=None,
+    num_landmarks=None,
     args=None,
     kwargs=None,
 ):
@@ -288,14 +307,15 @@ def _gradient_descent(
     if kwargs is None:
         kwargs = {}
     
-    eigen_flag = len(args[0].shape) == 1
-    lowrank_flag = (num_landmarks is not None) and (not eigen_flag) # will only do updated RPCholesky for landmark points in the case that we're not doing method = "eigen"
+    full = False 
+    if num_landmarks is None:
+        full = True 
+    
+    # get shape of the full dataset embedding, X = (n_samples, n_components) ndarray
+    n_samples = args[1]
+    n_components = args[2]
 
-    if lowrank_flag:
-        assert rpchol_iter is not None 
-        n_samples = args[1]
-        n_components = args[2]
-
+    
     p = p0.copy().ravel()
     update = np.zeros_like(p)
     gains = np.ones_like(p)
@@ -304,10 +324,11 @@ def _gradient_descent(
     best_iter = i = it
 
     iterates = []
+    rand_state = np.random.RandomState(42)  # for reproducibility
 
-    if lowrank_flag:
-        # compute initial RPChol landmarks
-        landmarks = _rpcholesky(p.reshape(n_samples, n_components), num_landmarks) 
+    if not full:
+        # compute landmarks
+        landmarks = rand_state.choice(n_samples, num_landmarks, replace=False)
         args.append(landmarks)
 
     tic = time()
@@ -316,11 +337,10 @@ def _gradient_descent(
         # only compute the error when needed
         kwargs["compute_error"] = check_convergence or i == max_iter - 1
 
-        if lowrank_flag:
-            if (i+1) % rpchol_iter == 0:
-                # recompute the landmarks
-                landmarks = _rpcholesky(p.reshape(n_samples, n_components), num_landmarks)
-                args[-1] = landmarks 
+        if not full:
+            # recompute landmarks
+            landmarks = rand_state.choice(n_samples, num_landmarks, replace=False)
+            args[-1] = landmarks 
 
         iterates.append(p.copy())
         error, grad = objective(p, *args, **kwargs)
