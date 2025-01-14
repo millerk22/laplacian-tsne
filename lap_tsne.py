@@ -754,7 +754,8 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         "gl_normalization": [StrOptions({"combinatorial", "normalized"})],
         ##### PUT graph construction parameter option here
         "num_landmarks" : [None, Integral],
-        "k_eigen":[None, Integral]
+        "k_eigen":[None, Integral],
+        "repulsion_kernel" : [StrOptions({"standard", "hat"})]
     }
 
     # Control the number of iterations (TO BE CHANGED POSSIBLY)
@@ -784,7 +785,8 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         gl_kernel="entropyperp",
         gl_normalization="combinatorial", 
         num_landmarks = 100,
-        k_eigen = 80
+        k_eigen = 80,
+        repulsion_kernel = "hat"
     ):
         self.n_components = n_components
         self.perplexity = perplexity
@@ -805,6 +807,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.gl_normalization = gl_normalization
         self.num_landmarks = num_landmarks
         self.k_eigen = k_eigen
+        self.repulsion_kernel = repulsion_kernel
 
 
     def _check_params_vs_input(self, X):
@@ -965,7 +968,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             "min_grad_norm": self.min_grad_norm,
             "learning_rate": self.learning_rate_,
             "verbose": self.verbose,
-            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity),
+            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity, kernel=self.repulsion_kernel),
             "args": [self.evals, self.V, self.V.shape[0], self.n_components],
             "n_iter_without_progress": self._MAX_ITER,
             "max_iter": self._MAX_ITER,
