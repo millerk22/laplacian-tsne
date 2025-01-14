@@ -329,6 +329,8 @@ def _gradient_descent(
         # compute landmarks
         landmarks = rand_state.choice(n_samples, num_landmarks, replace=False)
         args.append(landmarks)
+    else:
+        args.append(None)
         
     tic = time()
     for i in range(it, max_iter):
@@ -781,8 +783,8 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         knn_graph=20,
         gl_kernel="entropyperp",
         gl_normalization="combinatorial", 
-        num_landmarks = 50,
-        k_eigen = 50
+        num_landmarks = 100,
+        k_eigen = 80
     ):
         self.n_components = n_components
         self.perplexity = perplexity
@@ -903,7 +905,8 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         
 
         toc = time()
-        print(f"gl_kernel = {self.gl_kernel}, time to compute P = {toc - tic}")
+        if self.verbose >= 2:
+            print(f"gl_kernel = {self.gl_kernel}, time to compute P = {toc - tic}")
 
         self.Graph = gl.graph(W)
         if self.verbose >= 2:
