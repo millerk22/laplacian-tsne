@@ -29,6 +29,7 @@ from sklearn.utils import check_random_state
 from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
 from sklearn.utils._param_validation import Hidden, Interval, StrOptions, validate_params
 from sklearn.utils.validation import _num_samples, check_non_negative
+from sklearn.manifold import _t_sne
 
 import matplotlib.pyplot as plt
 
@@ -114,14 +115,15 @@ def _rpcholesky(X_, k, tol=1e-5, returnG=False):
 def _laplacian_kl_divergence_eigen(
     params,
     evals,
+    V,
     n_samples,
     n_components,
     landmarks,
     skip_num_points=0,
     compute_error=True,
-    V = None,
     kernel="standard",
-    hat_bandwidth = 0.015
+    hat_bandwidth = 0.015, 
+    perplexity=30.0
 ):
     r"""t-SNE objective function: gradient of the Laplacian term + a low-rank approximation of the repulsion term
 
@@ -151,7 +153,7 @@ def _laplacian_kl_divergence_eigen(
     compute_error: bool, default=True
         If False, the kl_divergence is not computed and returns NaN.
 
-    V: ndarray of shape (k_eigen, n_components)
+    V: ndarray of shape (n_samples, k_eigen)
         Eigenvector matrix from the graph Laplacian, columns are the eigenvectors corresponding to the eigenvalues in ``evals``
 
     Returns
@@ -166,18 +168,21 @@ def _laplacian_kl_divergence_eigen(
     
     if V is None:
         raise ValueError("Eigenvector matrix ``V`` cannot be None...")
-
+    
     k_eigen = len(evals)
     A_embedded = params.reshape(k_eigen, n_components)  # these are the eigenfunction coefficients, our optimization variables.
-    grad = evals.reshape(1,-1) @ A_embedded / n_samples   # attraction term gradient  
-    cost = (A_embedded * grad).sum()        # attraction term cost 
+    grad_ = perplexity * (evals.reshape(1,-1) @ A_embedded) / n_samples   # attraction term gradient  
+    #grad_ = evals.reshape(1,-1) @ A_embedded / n_samples   # attraction term gradient, not using perplexity to scale the Dirichlet energy term.  
+    cost = (A_embedded * grad_).sum()        # attraction term cost 
     
     if landmarks is None:
         # "full" repulsion computation
         X_embedded = V @ A_embedded 
+        num_lm = n_samples
     else:
         # subsampled repulsion computation
         X_embedded = V[landmarks,:] @ A_embedded 
+        num_lm = len(landmarks)
 
 
     # compute the repulsive part of the cost function
@@ -194,31 +199,25 @@ def _laplacian_kl_divergence_eigen(
 
         # change this (make more efficient)
         H = np.zeros_like(distances)
-        nonzero_mask = distances > 0.0
-        valid_mask = nonzero_mask & (distances < (.1 / hat_bandwidth))
-        H[valid_mask] = hat_bandwidth / distances[valid_mask] 
+        mask = (repulsive_sum > 0) & (distances > 0.0)
+        H[mask] = hat_bandwidth / distances[mask] 
     else:
         raise ValueError(f"kernel = {kernel} not recognized...")
         
-    cost += np.log(repulsive_sum / (n_samples**2.0))
-    grad += (2.0/repulsive_sum) * (H @ X_embedded - H.sum(axis=1).reshape(-1,1) * X_embedded) 
+    cost += np.log(repulsive_sum / (num_lm**2.0))
+    grad = (2.0/repulsive_sum) * (H @ X_embedded - H.sum(axis=1).reshape(-1,1) * X_embedded) 
     
     if landmarks is None:
         grad = V.T @ grad
     else:
         grad = V[landmarks,:].T @ grad
+
+    grad += grad_   # add the Dirichlet energy contribution to the gradient
     grad = grad.ravel()
     
     return cost, grad
 
 
-
-################################################
-################################################
-#### CHANGE TO DO ONLY "full" or "landmarks" sampling.
-#### SEE WHAT CAN USE FROM Adam's code
-#############################################
-###########################################
 
 def _gradient_descent(
     objective,
@@ -312,8 +311,8 @@ def _gradient_descent(
         full = True 
     
     # get shape of the full dataset embedding, X = (n_samples, n_components) ndarray
-    n_samples = args[1]
-    n_components = args[2]
+    n_samples = args[2]
+    n_components = args[3]
 
     
     p = p0.copy().ravel()
@@ -330,7 +329,7 @@ def _gradient_descent(
         # compute landmarks
         landmarks = rand_state.choice(n_samples, num_landmarks, replace=False)
         args.append(landmarks)
-
+        
     tic = time()
     for i in range(it, max_iter):
         check_convergence = (i + 1) % n_iter_check == 0
@@ -749,11 +748,10 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             Hidden(StrOptions({"deprecated"})),
         ],
         "knn_graph": [Interval(Integral, 2, None, closed="left")],
-        "gl_kernel": [StrOptions({"entropyperp", "gaussian", "uniform"})],
+        "gl_kernel": [StrOptions({"entropyperp", "entropyperp_old", "gaussian", "uniform"})],
         "gl_normalization": [StrOptions({"combinatorial", "normalized"})],
         ##### PUT graph construction parameter option here
         "num_landmarks" : [None, Integral],
-        "rpchol_iter":[None, Integral],
         "k_eigen":[None, Integral]
     }
 
@@ -782,8 +780,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         n_iter="deprecated",
         knn_graph=20,
         gl_kernel="entropyperp",
-        gl_normalization="combinatorial",
-        rpchol_iter=50, 
+        gl_normalization="combinatorial", 
         num_landmarks = 50,
         k_eigen = 50
     ):
@@ -841,16 +838,29 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         if self.verbose:
             print("[t-SNE] Computing the graph Laplacian via GraphLearning package...")
         
-
+        tic = time()
         if self.gl_kernel in ["uniform", "gaussian"]:
             W = gl.weightmatrix.knn(X, self.knn_graph, kernel=self.gl_kernel)
         elif self.gl_kernel == "entropyperp":
-            #############################################################
-            #############################################################
-            ########### ADD FASTER METHODS, leveraging Adam's Code #####
-            ###########################################################
-            ############################################################
+            if self.perplexity > self.knn_graph:
+                print(f"perplexity {self.perplexity} is too large... setting to half of knn = {self.knn_graph}")
+                self.perplexity = 0.5*self.knn_graph
 
+            # compute k-nearest neighbors distances 
+            ### using approximate nearest neighbors with annoy in grpahlearning package. running just this block in a Jupyter cell seems to be slower than sklearn NearestNeighbors, but run here in the midst of LapTSNE seems to be just as fast.
+            # n = X.shape[0]
+            # knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
+            # self_ind = np.ones((n,self.knn_graph))*np.arange(n)[:,None]
+            # D = coo_matrix((knn_dist.flatten(), (self_ind.flatten(), knn_ind.flatten())),shape=(n,n)).tocsr()
+            
+            KNN = NearestNeighbors(n_neighbors=self.knn_graph, metric="euclidean")
+            KNN.fit(X) 
+            D = KNN.kneighbors_graph(X, mode="distance").astype(np.float32)
+
+            # compute badnwidths via sklearn function
+            W = _t_sne._joint_probabilities_nn(D, self.perplexity, 0)
+
+        elif self.gl_kernel == "entropyperp_old":
             # compute k-nearest neighbors data
             knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
             D = knn_dist * knn_dist  # squared distances
@@ -890,18 +900,22 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             W = coo_matrix((weights, (self_ind, knn_ind)),shape=(n,n)).tocsr()
             W = (W + W.transpose()) / 2.0
             W.setdiag(0)
+        
+
+        toc = time()
+        print(f"gl_kernel = {self.gl_kernel}, time to compute P = {toc - tic}")
 
         self.Graph = gl.graph(W)
-        L = self.Graph.laplacian(normalization=self.gl_normalization)
         if self.verbose >= 2:
             print(f"Graph is connected = {self.Graph.isconnected()}")
         
+        del W # don't need this stored anymore
 
-        #######################################################
-        #####################################################
-        ######### CHANGE INITIALIZATION METHODS HERE #########
-        ####### rename sc, use similar to Adam's code?
-        ###############################################
+        # compute eigenfunctions 
+        self.evals, self.V = self.Graph.eigen_decomp(k=self.k_eigen+1)
+        self.V, self.evals = self.V[:,1:], self.evals[1:]
+
+
         if isinstance(self.init, np.ndarray):
             X_embedded = self.init
         elif self.init == "pca":
@@ -923,37 +937,19 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
                 size=(n_samples, self.n_components)
             ).astype(np.float32)
         elif self.init == "sc": # Spectral Clustering initialization
-            _, X_embedded = self.Graph.eigen_decomp(k=self.n_components+1) 
-            X_embedded = X_embedded[:,1:].astype(np.float32)
-
-        if self.gl_kernel == "qij":
-            knn_inds = W.nonzero()
-            qdata = 1./ (1. + np.linalg.norm(X_embedded[knn_inds[0]] - X_embedded[knn_inds[1]], axis=1)**2.)
-            W[knn_inds] = qdata / qdata.sum()
-            self.Graph = gl.graph(W)
-            L = self.Graph.laplacian(normalization=self.gl_normalization)
-            if self.verbose >= 2:
-                print(f"Graph (with Q_ij) is connected = {self.Graph.isconnected()}")
-
-        del W # don't need this stored anymore
-
-        self.V, evals = self.Graph.eigen_decomp(k=self.k_eigen+1)
-        self.V, evals = self.V[:,1:], evals[1:]
+            assert self.k_eigen > self.n_components 
+            X_embedded = self.V[:,:self.n_components].astype(np.float32)
+        
         A_embedded = self.V.T @ X_embedded    # project onto eigenfunctions
 
         return self._lap_tsne_eig(
-            evals,
-            self.k_eigen,
             A_embedded=A_embedded,
             skip_num_points=skip_num_points,
         )
 
     def _lap_tsne_eig(
         self,
-        evals,
-        n_samples,
         A_embedded,
-        neighbors=None,
         skip_num_points=0,
     ):
         """Runs Laplacian approximation of t-SNE."""
@@ -966,12 +962,14 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             "min_grad_norm": self.min_grad_norm,
             "learning_rate": self.learning_rate_,
             "verbose": self.verbose,
-            "kwargs": dict(skip_num_points=skip_num_points),
-            "args": [evals, n_samples, self.n_components],
+            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity),
+            "args": [self.evals, self.V, self.V.shape[0], self.n_components],
             "n_iter_without_progress": self._MAX_ITER,
             "max_iter": self._MAX_ITER,
             "momentum": 0.5,
         }
+
+        n_samples = self.V.shape[0]
 
         opt_args["num_landmarks"] = self.num_landmarks
         obj_func = _laplacian_kl_divergence_eigen
