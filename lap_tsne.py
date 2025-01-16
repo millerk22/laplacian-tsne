@@ -752,7 +752,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         "knn_graph": [Interval(Integral, 2, None, closed="left")],
         "gl_kernel": [StrOptions({"entropyperp", "entropyperp_old", "gaussian", "uniform"})],
         "gl_normalization": [StrOptions({"combinatorial", "normalized"})],
-        ##### PUT graph construction parameter option here
+        "approx_nn": [None, Interval(Integral, 0, 1, closed="both")],
         "num_landmarks" : [None, Integral],
         "k_eigen":[None, Integral],
         "repulsion_kernel" : [StrOptions({"standard", "hat"})]
@@ -784,6 +784,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         knn_graph=20,
         gl_kernel="entropyperp",
         gl_normalization="combinatorial", 
+        approx_nn=None,
         num_landmarks = 100,
         k_eigen = 80,
         repulsion_kernel = "hat"
@@ -805,6 +806,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.knn_graph = knn_graph
         self.gl_kernel = gl_kernel
         self.gl_normalization = gl_normalization
+        self.approx_nn = approx_nn
         self.num_landmarks = num_landmarks
         self.k_eigen = k_eigen
         self.repulsion_kernel = repulsion_kernel
@@ -852,15 +854,21 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
                 self.perplexity = 0.5*self.knn_graph
 
             # compute k-nearest neighbors distances 
-            ### using approximate nearest neighbors with annoy in grpahlearning package. running just this block in a Jupyter cell seems to be slower than sklearn NearestNeighbors, but run here in the midst of LapTSNE seems to be just as fast.
-            # n = X.shape[0]
-            # knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
-            # self_ind = np.ones((n,self.knn_graph))*np.arange(n)[:,None]
-            # D = coo_matrix((knn_dist.flatten(), (self_ind.flatten(), knn_ind.flatten())),shape=(n,n)).tocsr()
-            
-            KNN = NearestNeighbors(n_neighbors=self.knn_graph, metric="euclidean")
-            KNN.fit(X) 
-            D = KNN.kneighbors_graph(X, mode="distance").astype(np.float32)
+            if (n_samples > 1e5) and (self.approx_nn is None):
+                print(f"Since n_samples = {n_samples} > 1e5, we use approximate nearest neighbor search...")
+                knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
+                self_ind = np.ones((n_samples,self.knn_graph))*np.arange(n)[:,None]
+                D = coo_matrix((knn_dist.flatten(), (self_ind.flatten(), knn_ind.flatten())),shape=(n_samples,n_samples)).tocsr()
+            elif self.approx_nn == 1:
+                knn_ind, knn_dist = gl.weightmatrix.knnsearch(X, self.knn_graph)
+                self_ind = np.ones((n_samples,self.knn_graph))*np.arange(n)[:,None]
+                D = coo_matrix((knn_dist.flatten(), (self_ind.flatten(), knn_ind.flatten())),shape=(n_samples,n_samples)).tocsr()
+            else:
+                if self.approx_nn is None:
+                    print(f"Since n_samples = {n_samples} <= 1e5, we use 'exact' nearest neighbor search...")
+                KNN = NearestNeighbors(n_neighbors=self.knn_graph, metric="euclidean")
+                KNN.fit(X) 
+                D = KNN.kneighbors_graph(X, mode="distance").astype(np.float32)
 
             # compute badnwidths via sklearn function
             W = _t_sne._joint_probabilities_nn(D, self.perplexity, 0)

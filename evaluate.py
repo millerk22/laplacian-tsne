@@ -2,8 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 from argparse import ArgumentParser
+import pandas as pd
 
 import os
+import shutil
+from tqdm import tqdm 
+from itertools import Counter
+ 
 
 ###############################################
 ###############################################
@@ -101,16 +106,18 @@ def faster_knn_eval_series(X, y, n_neighbors_list=[1, 3, 5, 10, 15, 20, 25, 30])
     return avg_accs
 
 
-def evaluate_output(X, X_new, y, name, baseline=False):
-    results = {}
-    results['name'] = name
+def evaluate_output(X, X_new, y, baseline=False):
     if baseline:
-        baseline_knn_accs = knn_eval_series(X, y)
-        results['baseline_knn'] = baseline_knn_accs
-    knn_accs = knn_eval_series(X_new, y)
-    results['knn'] = knn_accs
-    return results
-
+        baseline_knn_accs = faster_knn_eval_series(X, y)
+    else:
+        baseline = None
+    knn_accs = faster_knn_eval_series(X_new, y)
+    
+    return knn_accs, baseline_knn_accs
+###################
+#### As add different evaluations, add them to harcoded list of evaluations used in this evaluate_output function 
+#### MAKE SURE THE ORDERING IS CORRECT FOR WHAT IS RETURNED IN evaluate_output function
+EVALUATIONS = ["knn class acc", "baseline knn class acc"]
 
 
 if __name__ == "__main__":
@@ -122,3 +129,50 @@ if __name__ == "__main__":
     # load the results for the datasets indicated. if list is empty, run for all datasets found in args.loc 
     assert os.path.exists(args.loc)
 
+    datasets_given = args.datasets
+
+    # check that these datasets have original datasets under the 'data' directory
+    for i, d in enumerate(datasets_given):
+        if not os.path.exists(f"./data/{d}.npz"):
+            print(f"WARNING: Could not find orig. data for {d} under the data directory (./data/)...")
+            datasets_given[i] = "notpresent"
+
+    datasets_loc = [f.path for f in os.scandir(args.loc) if f.is_dir()] 
+    if len(datasets_given) == 0:
+        datasets_to_do = datasets_loc
+    else:
+        datasets_to_do = []
+        for d in datasets_given:
+            if os.path.join(args.loc, d) in datasets_loc:
+               datasets_to_do.append(os.path.join(args.loc, d)) 
+    print(f"Found the following datasets' results to evaluate in {args.loc}:")
+    for dirname in datasets_to_do:
+        print(f"\t{dirname}")
+    print("\n")
+
+    
+    for idx, dirname in enumerate(datasets_to_do):
+        dataset_name = dirname.split("/")[-1]
+
+        # load the original dataset, with associated class labels, y
+        data = np.load(os.path.join("./data", dataset_name), allow_pickle=True)
+        X, y = data['X'], data['y']
+
+        # evaluate each of the learned embeddings in this directory
+        list_of_X_ = [fname for fname in os.listdir(dirname) if fname.split(".")[-1] == "npy"]
+        savename = os.path.join(dirname, "eval.csv")
+
+        if os.path.exists(savename):
+            print(f"Found previous results for {savename}, saving previous results as 'old' file in same location...")
+            shutil.copy(savename, os.path.join(dirname, "eval_old.csv"))
+
+        res_df = pd.DataFrame(columns=["name"]+EVALUATIONS)
+
+        for i, fname in tqdm(enumerate(list_of_X_), total=len(list_of_X_), desc=f"Evaluating embeddings for {dataset_name}, ({idx+1}/{len(datasets_to_do)})"):
+            X_ = np.load(os.path.join(dirname, fname))
+            knn_acc, baseline_knn_acc = evaluate_output(X, X_, y, baseline=True)
+            res_df.loc[i] = [fname, knn_acc, baseline_knn_acc]
+            res_df.to_csv(savename)
+            
+
+            
