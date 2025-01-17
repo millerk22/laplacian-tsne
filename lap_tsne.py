@@ -28,7 +28,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.utils import check_random_state
 from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
 from sklearn.utils._param_validation import Hidden, Interval, StrOptions, validate_params
-from sklearn.utils.validation import _num_samples, check_non_negative
+from sklearn.utils.validation import _num_samples, check_non_negative, validate_data
 from sklearn.manifold import _t_sne
 
 import matplotlib.pyplot as plt
@@ -755,7 +755,8 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         "approx_nn": [None, Interval(Integral, 0, 1, closed="both")],
         "num_landmarks" : [None, Integral],
         "k_eigen":[None, Integral],
-        "repulsion_kernel" : [StrOptions({"standard", "hat"})]
+        "repulsion_kernel" : [StrOptions({"standard", "hat"})],
+        "hat_bandwidth" : [None, Interval(Real, 0, None, closed="left")]
     }
 
     # Control the number of iterations (TO BE CHANGED POSSIBLY)
@@ -787,7 +788,8 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         approx_nn=None,
         num_landmarks = 100,
         k_eigen = 80,
-        repulsion_kernel = "hat"
+        repulsion_kernel = "hat", 
+        hat_bandwidth=0.015
     ):
         self.n_components = n_components
         self.perplexity = perplexity
@@ -811,6 +813,15 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.k_eigen = k_eigen
         self.repulsion_kernel = repulsion_kernel
         self.prepped = False
+        if self.repulsion_kernel == "standard":
+            self.hat_bandwidth = None
+        else:
+            if hat_bandwidth is None:
+                print("WARNING: hat_bandwidth specified as None is incompatible with repulsion_kernel = 'hat'.\nSetting hat_bandwidth = 0.015, the default.")
+                self.hat_bandwidth = 0.015
+            else:
+                self.hat_bandwidth = hat_bandwidth
+    
 
 
     def _check_params_vs_input(self, X):
@@ -832,7 +843,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         else:
             self.learning_rate_ = self.learning_rate
 
-        X = self._validate_data(
+        X = validate_data(self, 
                 X, accept_sparse=["csr", "csc", "coo"], dtype=[np.float32, np.float64]
             )
         n_samples = X.shape[0]
@@ -923,7 +934,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         del W # don't need this stored anymore
 
         # compute eigenfunctions 
-        self.evals, self.V = self.Graph.eigen_decomp(k=self.k_eigen+1, self.gl_normalization)
+        self.evals, self.V = self.Graph.eigen_decomp(k=self.k_eigen+1, normalization=self.gl_normalization)
         self.V, self.evals = self.V[:,1:], self.evals[1:]
 
         self.prepped = True # now when .fit() is called, we won't need to recompute the graph 
@@ -986,7 +997,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             "min_grad_norm": self.min_grad_norm,
             "learning_rate": self.learning_rate_,
             "verbose": self.verbose,
-            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity, kernel=self.repulsion_kernel),
+            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity, kernel=self.repulsion_kernel, hat_bandwidth=self.hat_bandwidth),
             "args": [self.evals, self.V, self.V.shape[0], self.n_components],
             "n_iter_without_progress": self._MAX_ITER,
             "max_iter": self._MAX_ITER,

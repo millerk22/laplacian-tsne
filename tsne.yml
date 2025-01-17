@@ -2,7 +2,8 @@ name: tsne
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
+  - python=3.11
+  - pandas
   - numpy
   - scipy
   - matplotlib
