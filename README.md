@@ -26,7 +26,8 @@ conda activate tsne
 * ``m``: target embedding dimension for tSNE to compute. 
 * ``num_landmarks``: # of landmark points to use for approximating the repulsion kernel term in the objective function
 * ``learning_rate``: learning rate value for the SGD with momentum optimization iterations
+* ``hat_bandwidth``: bandwidth for the ``hat`` repulsion kernel.
 
-In the config file, currently you specify a list of values to try for only the following parameters: ``knn_graph``, ``k_eigen``, ``repulsion_kernel``, and ``num_landmarks``. 
+In the config file, currently you specify a list of values to try for only the following parameters: ``knn_graph``, ``k_eigen``, ``repulsion_kernel``, ``num_landmarks``, and ``hat_bandwidth``.
 
 
