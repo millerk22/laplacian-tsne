@@ -7,7 +7,7 @@ import pandas as pd
 import os
 import shutil
 from tqdm import tqdm 
-from itertools import Counter
+from collections import Counter
  
 
 ###############################################
@@ -124,6 +124,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--loc", type=str, default="./results/")
     parser.add_argument("--datasets", nargs="+", default=[])
+    parser.add_argument("--recompute", type=int, default=0)
     args = parser.parse_args()
 
     # load the results for the datasets indicated. if list is empty, run for all datasets found in args.loc 
@@ -148,31 +149,40 @@ if __name__ == "__main__":
     print(f"Found the following datasets' results to evaluate in {args.loc}:")
     for dirname in datasets_to_do:
         print(f"\t{dirname}")
-    print("\n")
+    print("")
 
     
     for idx, dirname in enumerate(datasets_to_do):
         dataset_name = dirname.split("/")[-1]
 
         # load the original dataset, with associated class labels, y
-        data = np.load(os.path.join("./data", dataset_name), allow_pickle=True)
+        data = np.load(os.path.join("./data", f"{dataset_name}.npz"), allow_pickle=True)
         X, y = data['X'], data['y']
+        if y.dtype != int:
+            print(f"Labels (y) for dataset = {dataset_name} are not integers, skipping...")
+            continue
 
-        # evaluate each of the learned embeddings in this directory
+        # evaluate each of the learned embeddings that don't already have results in this directory
         list_of_X_ = [fname for fname in os.listdir(dirname) if fname.split(".")[-1] == "npy"]
         savename = os.path.join(dirname, "eval.csv")
 
-        if os.path.exists(savename):
-            print(f"Found previous results for {savename}, saving previous results as 'old' file in same location...")
-            shutil.copy(savename, os.path.join(dirname, "eval_old.csv"))
-
-        res_df = pd.DataFrame(columns=["name"]+EVALUATIONS)
-
+        if os.path.exists(savename) and not args.recompute:
+            # if have previous results, load that dataframe in
+            res_df = pd.read_csv(savename)
+            already_evaluated = res_df["name"].values
+        else:
+            # no previously saved results, instantiate new dataframe
+            res_df = pd.DataFrame(columns=["name"]+EVALUATIONS)
+            already_evaluated = np.array([])
+            
+        if not args.recompute:
+            list_of_X_ = np.setdiff1d(list_of_X_, already_evaluated)
+        
         for i, fname in tqdm(enumerate(list_of_X_), total=len(list_of_X_), desc=f"Evaluating embeddings for {dataset_name}, ({idx+1}/{len(datasets_to_do)})"):
             X_ = np.load(os.path.join(dirname, fname))
             knn_acc, baseline_knn_acc = evaluate_output(X, X_, y, baseline=True)
-            res_df.loc[i] = [fname, knn_acc, baseline_knn_acc]
-            res_df.to_csv(savename)
+            res_df.loc[len(res_df)+1] = [fname, knn_acc, baseline_knn_acc]
+            res_df.to_csv(savename, index=None)
             
 
             

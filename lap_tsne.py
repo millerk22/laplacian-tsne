@@ -810,15 +810,14 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.num_landmarks = num_landmarks
         self.k_eigen = k_eigen
         self.repulsion_kernel = repulsion_kernel
+        self.prepped = False
 
 
     def _check_params_vs_input(self, X):
         if self.perplexity >= X.shape[0]:
             raise ValueError("perplexity must be less than n_samples")
-
-    def _fit(self, X, skip_num_points=0):
-        """Private function to fit the model using X as training data."""
-
+    
+    def _prep_graph(self, X):
         if isinstance(self.init, str) and self.init == "pca" and issparse(X):
             raise TypeError(
                 "PCA initialization is currently not supported "
@@ -836,9 +835,6 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         X = self._validate_data(
                 X, accept_sparse=["csr", "csc", "coo"], dtype=[np.float32, np.float64]
             )
-        
-        random_state = check_random_state(self.random_state)
-
         n_samples = X.shape[0]
 
         # compute graph laplacian with graphlearning package
@@ -849,9 +845,9 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         if self.gl_kernel in ["uniform", "gaussian"]:
             W = gl.weightmatrix.knn(X, self.knn_graph, kernel=self.gl_kernel)
         elif self.gl_kernel == "entropyperp":
-            if self.perplexity > self.knn_graph:
-                print(f"perplexity {self.perplexity} is too large... setting to half of knn = {self.knn_graph}")
-                self.perplexity = 0.5*self.knn_graph
+            # if self.perplexity > self.knn_graph:
+            #     print(f"perplexity {self.perplexity} is too large... setting to half of knn = {self.knn_graph}")
+            #     self.perplexity = 0.5*self.knn_graph
 
             # compute k-nearest neighbors distances 
             if (n_samples > 1e5) and (self.approx_nn is None):
@@ -916,8 +912,9 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         
 
         toc = time()
+        self.time_to_compute_P = toc - tic
         if self.verbose >= 2:
-            print(f"gl_kernel = {self.gl_kernel}, time to compute P = {toc - tic}")
+            print(f"gl_kernel = {self.gl_kernel}, time to compute P = {self.time_to_compute_P}")
 
         self.Graph = gl.graph(W)
         if self.verbose >= 2:
@@ -929,6 +926,19 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.evals, self.V = self.Graph.eigen_decomp(k=self.k_eigen+1)
         self.V, self.evals = self.V[:,1:], self.evals[1:]
 
+        self.prepped = True # now when .fit() is called, we won't need to recompute the graph 
+
+        return X
+
+    def _fit(self, X, skip_num_points=0):
+        """Private function to fit the model using X as training data."""
+
+        random_state = check_random_state(self.random_state)
+        if not self.prepped:
+            print("\tPreparing graph...")
+            X = self._prep_graph(X)
+
+        n_samples = X.shape[0]
 
         if isinstance(self.init, np.ndarray):
             X_embedded = self.init
