@@ -923,7 +923,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         del W # don't need this stored anymore
 
         # compute eigenfunctions 
-        self.evals, self.V = self.Graph.eigen_decomp(k=self.k_eigen+1)
+        self.evals, self.V = self.Graph.eigen_decomp(k=self.k_eigen+1, self.gl_normalization)
         self.V, self.evals = self.V[:,1:], self.evals[1:]
 
         self.prepped = True # now when .fit() is called, we won't need to recompute the graph 
