@@ -1,0 +1,12 @@
+dataset: mnist_test
+perplexity: 30.0
+m : 2
+approx_nn: 0
+learning_rate: 0.5
+
+repulsion_kernel: ['hat']
+num_landmarks: [100]
+hat_bandwidth: [0.015, 0.05]
+
+k_eigen: [50, 100]
+knn_graph: [20]
