@@ -13,5 +13,6 @@ dependencies:
     - tqdm
     - annoy
     - torch
+    - torchvision
     - graphlearning
     - fiftyone
