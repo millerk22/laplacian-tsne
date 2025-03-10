@@ -30,6 +30,7 @@ from sklearn.utils._openmp_helpers import _openmp_effective_n_threads
 from sklearn.utils._param_validation import Hidden, Interval, StrOptions, validate_params
 from sklearn.utils.validation import _num_samples, check_non_negative, validate_data
 from sklearn.manifold import _t_sne
+from utils import *
 
 import matplotlib.pyplot as plt
 
@@ -38,76 +39,6 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import _barnes_hut_tsne, _utils  # type: ignore
 
 MACHINE_EPSILON = np.finfo(np.double).eps
-
-
-def opt_bisection(f, xmin=0.0, xmax=10.0, tol=1e-4, itermax=1000, debug=False):
-    r"""
-    Function to find root of $f(x)$ via bisection method. Default settings of left and right endpoints
-    are with the entropy-perplexity smoothing in mind.
-    """
-
-    other_iters = 0
-    assert f(xmin) > 0.0
-    while f(xmax) > 0.0:
-        if f(xmin)*f(xmax) < 0:
-            raise ValueError(f"f(xmin) = {f(xmin)} (should be > 0) and f(xmax) ={f(xmax)} (want to be < 0)")
-        xmax *= 10
-        other_iters += 1
-        if other_iters > 10:
-            break
-    
-    if other_iters != 0 and debug:
-        print(other_iters)
-        
-    it = 0
-    if abs(f(xmin)) <= tol:
-        if debug: print(it)
-        return xmin 
-    if abs(f(xmax)) <= tol:
-        if debug: print(it)
-        return xmax
-    
-    
-    while it <= itermax:
-        c = 0.5*(xmin + xmax)
-        if abs(f(c)) <= tol:
-            if debug: print(it)
-            return c 
-        if f(xmin)*f(c) > 0.0:
-            xmin = c 
-        else:
-            xmax = c 
-        it += 1
-    print(f"------- WARNING: Bisection did not converge in {itermax} iterations to tol = {tol}, current err = {abs(f(c))} -------")
-    return None
-
-
-def _rpcholesky(X_, k, tol=1e-5, returnG=False):
-    n = X_.shape[0]
-    rng = np.random.default_rng()
-    
-    diags = np.ones(n).astype(float)
-    orig_trace = float(n) # for the kernel k(x_i, x_j) = 1/(1 + ||x_i - x_j||^2)
-
-    landmarks = []
-    G = np.zeros((k,n))
-
-    for i in range(k):
-        idx = rng.choice(range(n), p=diags/diags.sum())
-        landmarks.append(idx)  # add this pivot to the landmark set
-        idx_row = 1. / (1. + pairwise_distances(X_, X_[idx,:].reshape(1, -1), metric="euclidean", squared=True)).flatten()
-        G[i,:] = (idx_row - G[:i, idx].T @ G[:i,:]) / np.sqrt(diags[idx])
-        diags -= G[i,:]**2.
-        diags = diags.clip(min=0)
-
-        if tol > 0.0 and diags.sum() <= tol*orig_trace:
-            G = G[:i,:]
-            break
-
-    if returnG:
-        return landmarks, G
-    
-    return landmarks
 
 
 
@@ -121,12 +52,15 @@ def _laplacian_kl_divergence_eigen(
     landmarks,
     skip_num_points=0,
     compute_error=True,
+    gamma=1.0,
     kernel="standard",
-    hat_bandwidth = 0.015, 
+    hat_bandwidth = 1.0, 
     perplexity=30.0
 ):
     r"""t-SNE objective function: gradient of the Laplacian term + a low-rank approximation of the repulsion term
-
+    
+    TODO: Explain the extra parameters I have added
+    
     Parameters
     ----------
     params : ndarray of shape (n_params,)
@@ -193,6 +127,7 @@ def _laplacian_kl_divergence_eigen(
         
     elif kernel == "hat":
         distances = pairwise_distances(X_embedded, metric="euclidean", squared=False)
+        print(hat_bandwidth)
         G = np.clip(1.0-hat_bandwidth*distances,0,None)
         np.fill_diagonal(G, 0)
         repulsive_sum = G.sum()
@@ -204,7 +139,7 @@ def _laplacian_kl_divergence_eigen(
     else:
         raise ValueError(f"kernel = {kernel} not recognized...")
         
-    cost += np.log(repulsive_sum / (num_lm**2.0))
+    cost += gamma*np.log(repulsive_sum / (num_lm**2.0))     # scale by gamma (the repulsion relative weighting)
     grad = (2.0/repulsive_sum) * (H @ X_embedded - H.sum(axis=1).reshape(-1,1) * X_embedded) 
     
     if landmarks is None:
@@ -212,6 +147,7 @@ def _laplacian_kl_divergence_eigen(
     else:
         grad = V[landmarks,:].T @ grad
 
+    grad *= gamma   # the repulsion relative weighting parameter
     grad += grad_   # add the Dirichlet energy contribution to the gradient
     grad = grad.ravel()
     
@@ -755,8 +691,10 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         "approx_nn": [None, Interval(Integral, 0, 1, closed="both")],
         "num_landmarks" : [None, Integral],
         "k_eigen":[None, Integral],
+        "gamma":[None, Interval(Real, 0, None, closed="left")],
         "repulsion_kernel" : [StrOptions({"standard", "hat"})],
-        "hat_bandwidth" : [None, Interval(Real, 0, None, closed="left")]
+        "hat_bandwidth" : [None, Interval(Real, 0, None, closed="left")],
+        "debug" : [None, Interval(Integral, 0, 1, closed="both")]
     }
 
     # Control the number of iterations (TO BE CHANGED POSSIBLY)
@@ -788,8 +726,10 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         approx_nn=None,
         num_landmarks = 100,
         k_eigen = 80,
+        gamma = 1.0,   # relative repulsion weight in objective function
         repulsion_kernel = "hat", 
-        hat_bandwidth=0.015
+        hat_bandwidth=1.0,
+        debug=0
     ):
         self.n_components = n_components
         self.perplexity = perplexity
@@ -811,6 +751,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         self.approx_nn = approx_nn
         self.num_landmarks = num_landmarks
         self.k_eigen = k_eigen
+        self.gamma = gamma
         self.repulsion_kernel = repulsion_kernel
         self.prepped = False
         if self.repulsion_kernel == "standard":
@@ -818,9 +759,11 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         else:
             if hat_bandwidth is None:
                 print("WARNING: hat_bandwidth specified as None is incompatible with repulsion_kernel = 'hat'.\nSetting hat_bandwidth = 0.015, the default.")
-                self.hat_bandwidth = 0.015
+                self.hat_bandwidth = 1.0
             else:
                 self.hat_bandwidth = hat_bandwidth
+        self.debug = debug
+        
     
 
 
@@ -990,6 +933,9 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
         """Runs Laplacian approximation of t-SNE."""
 
         params = A_embedded.ravel()
+
+        if self.debug:
+            print(self.gamma, self.repulsion_kernel, self.hat_bandwidth, self.perplexity)
         
         opt_args = {
             "it": 0,
@@ -997,7 +943,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             "min_grad_norm": self.min_grad_norm,
             "learning_rate": self.learning_rate_,
             "verbose": self.verbose,
-            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity, kernel=self.repulsion_kernel, hat_bandwidth=self.hat_bandwidth),
+            "kwargs": dict(skip_num_points=skip_num_points, perplexity=self.perplexity, gamma=self.gamma, kernel=self.repulsion_kernel, hat_bandwidth=self.hat_bandwidth),
             "args": [self.evals, self.V, self.V.shape[0], self.n_components],
             "n_iter_without_progress": self._MAX_ITER,
             "max_iter": self._MAX_ITER,

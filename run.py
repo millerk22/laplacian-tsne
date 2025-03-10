@@ -9,8 +9,9 @@ import pandas as pd
 from lap_tsne import *
 
 
-def run_experiment(X, LapTSNE, repulsion_kernel='hat', num_landmarks=100, hat_bandwidth=None):
+def run_experiment(X, LapTSNE, repulsion_rel_weight=1.0, repulsion_kernel='hat', num_landmarks=100, hat_bandwidth=None):
     # manually set these hyperparameters for the already prepped object 
+    LapTSNE.gamma = repulsion_rel_weight
     LapTSNE.repulsion_kernel = repulsion_kernel 
     LapTSNE.num_landmarks = num_landmarks 
     LapTSNE.hat_bandwidth = hat_bandwidth
@@ -28,6 +29,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Main testing script for running LapTSNE.")
     parser.add_argument("--config", type=str, default="config.yaml")
     parser.add_argument("--resultsdir", type=str, default="./results/")
+    parser.add_argument("--debug", type=int, default=0)
     args = parser.parse_args()
 
     if not os.path.exists(args.resultsdir):
@@ -56,17 +58,19 @@ if __name__ == "__main__":
     graph_setting_list = list(product(knn_graph_vals, k_eigen_vals))
 
     rep_kernel_vals = config["repulsion_kernel"]
+    rep_rel_weights = config["repulsion_rel_weights"]
     num_lm_vals = config["num_landmarks"]
     hat_bandwidth_vals = config["hat_bandwidth"]
     assert type(rep_kernel_vals) == list 
+    assert type(rep_rel_weights) == list 
     assert type(num_lm_vals) == list 
     assert type(hat_bandwidth_vals) == list
     opt_hyperparam_list = []
-    for tup in list(product(rep_kernel_vals, num_lm_vals)):
+    for tup in list(product(rep_rel_weights, rep_kernel_vals, num_lm_vals)):
         if tup[0] == "hat":
-            opt_hyperparam_list.extend([(tup[0], tup[1], hat_bw) for hat_bw in hat_bandwidth_vals])
+            opt_hyperparam_list.extend([(tup[0], tup[1], tup[2], hat_bw) for hat_bw in hat_bandwidth_vals])
         else:
-            opt_hyperparam_list.append((tup[0], tup[1], None))
+            opt_hyperparam_list.append((tup[0], tup[1], tup[2], None))
 
     # load in dataset
     dataloc = os.path.join("./data", f"{dataset}.npz")
@@ -90,16 +94,19 @@ if __name__ == "__main__":
     print(f"\tk_eigen = {k_eigen_vals}")
     print(f"\trepulsion_kernel = {rep_kernel_vals}, num_landmarks = {num_lm_vals}")
     print(f"\that_bandwidth = {hat_bandwidth_vals}")
+    print(f"\trepulsion_rel_weight = {rep_rel_weights}")
     print("=====================================================\n")
 
     # iterate through each setting of graph hyperparameters
     for it, (knn_graph, k_eigen) in enumerate(graph_setting_list):
-        Lap_TSNE = LaplacianTSNE(n_components=m, knn_graph=knn_graph, perplexity=perplexity, k_eigen=k_eigen, approx_nn=approx_nn, learning_rate=learning_rate)
+        Lap_TSNE = LaplacianTSNE(n_components=m, knn_graph=knn_graph, perplexity=perplexity, k_eigen=k_eigen, \
+                                 approx_nn=approx_nn, learning_rate=learning_rate, debug=args.debug)
         Lap_TSNE._prep_graph(X)
 
         # iterate through optimization hyperparameter settings to try
-        for repulsion_kernel, num_landmarks, hat_bandwidth in tqdm(opt_hyperparam_list, total=len(opt_hyperparam_list), desc=f"Running tests for graph setting {it+1}/{len(graph_setting_list)}"):
-            exp_name = f"{dataset}_{m}_{perplexity}_{str(approx_nn)}_{knn_graph}_{k_eigen}_{repulsion_kernel}_{num_landmarks}_{learning_rate}_{hat_bandwidth}"
+        for rep_rel_weight, repulsion_kernel, num_landmarks, hat_bandwidth in tqdm(opt_hyperparam_list, total=len(opt_hyperparam_list), \
+                                                                   desc=f"Running tests for graph setting {it+1}/{len(graph_setting_list)}"):
+            exp_name = f"{dataset}_{m}_{perplexity}_{str(approx_nn)}_{knn_graph}_{k_eigen}_{rep_rel_weight}_{repulsion_kernel}_{num_landmarks}_{learning_rate}_{hat_bandwidth}"
             
             # check if experiment already done (recorded in timing_df)
             if exp_name in list(timing_df.name.values):
@@ -110,7 +117,9 @@ if __name__ == "__main__":
                     continue
             
             # run experiment
-            X_embedded, run_time = run_experiment(X, LapTSNE=Lap_TSNE, repulsion_kernel=repulsion_kernel, num_landmarks=num_landmarks, hat_bandwidth=hat_bandwidth)
+            X_embedded, run_time = run_experiment(X, LapTSNE=Lap_TSNE, repulsion_rel_weight=rep_rel_weight, \
+                                                  repulsion_kernel=repulsion_kernel, num_landmarks=num_landmarks, \
+                                                    hat_bandwidth=hat_bandwidth)
             
             # save embedding and results
             np.save(os.path.join(args.resultsdir, dataset, f"{exp_name}.npy"), X_embedded)

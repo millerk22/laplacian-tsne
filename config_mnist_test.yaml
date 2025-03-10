@@ -4,9 +4,11 @@ m : 2
 approx_nn: 0
 learning_rate: 0.5
 
+repulsion_rel_weights: [1.0, 10., 0.1]               
 repulsion_kernel: ['hat']
 num_landmarks: [100]
-hat_bandwidth: [0.015, 0.05]
+hat_bandwidth: [1.0]
 
 k_eigen: [50, 100]
 knn_graph: [20]
+
