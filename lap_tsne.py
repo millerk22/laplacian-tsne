@@ -126,15 +126,13 @@ def _laplacian_kl_divergence_eigen(
         H = G**2.
         
     elif kernel == "hat":
+        # is this doing the correct thing?
         distances = pairwise_distances(X_embedded, metric="euclidean", squared=False)
-        print(hat_bandwidth)
-        G = np.clip(1.0-hat_bandwidth*distances,0,None)
+        G = np.clip(1.0-hat_bandwidth*distances, a_min=0, a_max=None)
         np.fill_diagonal(G, 0)
-        repulsive_sum = G.sum()
-
-        # change this (make more efficient)
+        repulsive_sum = G.sum() + 1e-9
         H = np.zeros_like(distances)
-        mask = (repulsive_sum > 0) & (distances > 0.0)
+        mask = (G > 0) & (distances > 0.0)
         H[mask] = hat_bandwidth / distances[mask] 
     else:
         raise ValueError(f"kernel = {kernel} not recognized...")
@@ -758,7 +756,7 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             self.hat_bandwidth = None
         else:
             if hat_bandwidth is None:
-                print("WARNING: hat_bandwidth specified as None is incompatible with repulsion_kernel = 'hat'.\nSetting hat_bandwidth = 0.015, the default.")
+                print("WARNING: hat_bandwidth specified as None is incompatible with repulsion_kernel = 'hat'.\nSetting hat_bandwidth = 1.0, the default.")
                 self.hat_bandwidth = 1.0
             else:
                 self.hat_bandwidth = hat_bandwidth
@@ -882,15 +880,21 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
 
         self.prepped = True # now when .fit() is called, we won't need to recompute the graph 
 
+        if self.debug:
+            print(f"in _prep_graph, self.hat_bandwidth = {self.hat_bandwidth}")
+
         return X
 
     def _fit(self, X, skip_num_points=0):
         """Private function to fit the model using X as training data."""
 
         random_state = check_random_state(self.random_state)
+
         if not self.prepped:
             print("\tPreparing graph...")
             X = self._prep_graph(X)
+        
+        #print(f"at beginning of self._fit, self.hat_bandwidth = {self.hat_bandwidth}")
 
         n_samples = X.shape[0]
 
@@ -919,6 +923,9 @@ class LaplacianTSNE(ClassNamePrefixFeaturesOutMixin, TransformerMixin, BaseEstim
             X_embedded = self.V[:,:self.n_components].astype(np.float32)
         
         A_embedded = self.V.T @ X_embedded    # project onto eigenfunctions
+        
+        if self.debug:
+            print(f"in _fit, self.hat_bandwidth = {self.hat_bandwidth}")
 
         return self._lap_tsne_eig(
             A_embedded=A_embedded,

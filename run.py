@@ -67,7 +67,7 @@ if __name__ == "__main__":
     assert type(hat_bandwidth_vals) == list
     opt_hyperparam_list = []
     for tup in list(product(rep_rel_weights, rep_kernel_vals, num_lm_vals)):
-        if tup[0] == "hat":
+        if tup[1] == "hat":
             opt_hyperparam_list.extend([(tup[0], tup[1], tup[2], hat_bw) for hat_bw in hat_bandwidth_vals])
         else:
             opt_hyperparam_list.append((tup[0], tup[1], tup[2], None))
