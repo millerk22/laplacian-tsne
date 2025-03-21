@@ -99,6 +99,7 @@ if __name__ == "__main__":
 
     # iterate through each setting of graph hyperparameters
     for it, (knn_graph, k_eigen) in enumerate(graph_setting_list):
+        print(f"Running test settings for (knn_graph, k_eigen) = {(knn_graph, k_eigen)}....")
         Lap_TSNE = LaplacianTSNE(n_components=m, knn_graph=knn_graph, perplexity=perplexity, k_eigen=k_eigen, \
                                  approx_nn=approx_nn, learning_rate=learning_rate, debug=args.debug)
         Lap_TSNE._prep_graph(X)

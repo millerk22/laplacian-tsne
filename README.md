@@ -22,6 +22,7 @@ conda activate tsne
 * ``knn_graph``: # of k nearest neighbors in the graph we compute
 * ``k_eigen``: # of eigenpairs to compute for the matrix $P$ corresponding to the computed graph
 * ``approx_nn``: Whether or not to compute the knn graph via ``annoy`` package (approximate nearest neighbors) or "brute force" with sklearn's implementation with KDTree.
+* ``repulsion_rel_weights``: relative weighting of the repulsion term in the objective function.
 * ``repulsion_kernel``: Which repulsion kernel to use. Currently implemented options are: ``"hat"`` and ``"standard"``
 * ``m``: target embedding dimension for tSNE to compute. 
 * ``num_landmarks``: # of landmark points to use for approximating the repulsion kernel term in the objective function
