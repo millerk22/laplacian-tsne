@@ -97,6 +97,8 @@ if __name__ == "__main__":
     print(f"\trepulsion_rel_weight = {rep_rel_weights}")
     print("=====================================================\n")
 
+    # TODO: FOUND RESULTS check
+
     # iterate through each setting of graph hyperparameters
     for it, (knn_graph, k_eigen) in enumerate(graph_setting_list):
         print(f"Running test settings for (knn_graph, k_eigen) = {(knn_graph, k_eigen)}....")
